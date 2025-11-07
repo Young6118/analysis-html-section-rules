@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+  <style>
+    .controls {
+      margin: 20px 0;
+      padding: 15px;
+      background: #f5f5f5;
+      border-radius: 5px;
+    }
+    .control-group {
+      margin: 10px 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .control-group label {
+      min-width: 100px;
+      font-weight: bold;
+    }
+    .control-group input,
+    .control-group select {
+      flex: 1;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .control-group button {
+      padding: 8px 16px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .control-group button:hover {
+      background: #0056b3;
+    }
+    .current-path {
+      margin-top: 10px;
+      padding: 8px;
+      background: #e9ecef;
+      border-radius: 4px;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    #shadow-host {
+      margin-top: 20px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      min-height: 200px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="row">
+      <div class="col-12">
+        <h1>Original Content</h1>
+        
+        <div class="controls">
+          <div class="control-group">
+            <label>索引 (0-1999):</label>
+            <input type="number" id="index-input" min="0" value="0" placeholder="输入索引">
+            <button onclick="loadPrevious()">上一个</button>
+            <button onclick="loadByIndex()">跳转</button>
+            <button onclick="loadNext()">下一个</button>
+            <button onclick="loadRandom()">随机</button>
+          </div>
+          <div class="control-group">
+            <label>选择路径:</label>
+            <select id="path-select" onchange="loadByPath()">
+              <option value="">加载中...</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label>当前路径:</label>
+            <div class="current-path" id="current-path">-</div>
+          </div>
+          <div class="control-group">
+            <label>标注深度 (1-20):</label>
+            <input type="number" id="depth-input" min="1" max="20" value="1" placeholder="选择深度">
+            <button onclick="applyAnnotation()">应用标注</button>
+            <button onclick="autoAnnotate()">自动标注</button>
+            <button onclick="clearAnnotation()">清除标注</button>
+          </div>
+          <div class="control-group">
+            <label>自动标注信息:</label>
+            <div class="current-path" id="auto-annotation-info" style="font-size: 12px; color: #666;">-</div>
+          </div>
+        </div>
+        
+        <div id="shadow-host"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let pages = [];
+    let currentIndex = 0;
+    let shadowRoot = null;
+    let currentDepth = 1;
+
+    // 初始化：加载 pages.json 并设置下拉框
+    async function init() {
+      try {
+        // 读取 pages.json
+        const pagesResponse = await fetch('./pages.json');
+        pages = await pagesResponse.json();
+        
+        if (!pages || pages.length === 0) {
+          console.error('pages.json 为空或没有数据');
+          return;
+        }
+        
+        // 填充下拉框
+        const select = document.getElementById('path-select');
+        select.innerHTML = '';
+        pages.forEach((path, index) => {
+          const option = document.createElement('option');
+          option.value = index;
+          option.textContent = `[${index}] ${path}`;
+          select.appendChild(option);
+        });
+        
+        // 初始化 shadow DOM
+        const host = document.getElementById('shadow-host');
+        shadowRoot = host.attachShadow({ mode: 'open' });
+        
+        // 加载第 0 个路径
+        await loadByIndex(0);
+      } catch (error) {
+        console.error('初始化失败:', error);
+      }
+    }
+
+    // 通过索引加载
+    async function loadByIndex(index = null) {
+      if (index === null) {
+        const input = document.getElementById('index-input');
+        index = parseInt(input.value, 10);
+      }
+      
+      if (isNaN(index) || index < 0 || index >= pages.length) {
+        alert(`索引必须在 0-${pages.length - 1} 之间`);
+        return;
+      }
+      
+      currentIndex = index;
+      const path = pages[index];
+      
+      // 更新输入框和下拉框
+      document.getElementById('index-input').value = index;
+      document.getElementById('path-select').value = index;
+      document.getElementById('current-path').textContent = `索引: ${index} | 路径: ${path}`;
+      
+      await loadHTML(path);
+    }
+
+    // 通过路径选择器加载
+    async function loadByPath() {
+      const select = document.getElementById('path-select');
+      const index = parseInt(select.value, 10);
+      
+      if (isNaN(index) || index < 0 || index >= pages.length) {
+        return;
+      }
+      
+      await loadByIndex(index);
+    }
+
+    // 加载上一个路径
+    async function loadPrevious() {
+      if (currentIndex > 0) {
+        await loadByIndex(currentIndex - 1);
+      } else {
+        console.log('已经是第一个路径');
+      }
+    }
+
+    // 加载下一个路径
+    async function loadNext() {
+      if (currentIndex < pages.length - 1) {
+        await loadByIndex(currentIndex + 1);
+      } else {
+        console.log('已经是最后一个路径');
+      }
+    }
+
+    // 加载随机路径（不包含当前路径）
+    async function loadRandom() {
+      if (pages.length <= 1) {
+        console.log('只有一个路径，无法随机跳转');
+        return;
+      }
+      
+      // 生成随机索引，确保不是当前索引
+      let randomIndex;
+      do {
+        randomIndex = Math.floor(Math.random() * pages.length);
+      } while (randomIndex === currentIndex);
+      
+      await loadByIndex(randomIndex);
+    }
+
+    // 加载并挂载 HTML
+    async function loadHTML(path) {
+      try {
+        console.log('加载路径:', path);
+        
+        // 读取对应的 HTML 文件
+        const htmlResponse = await fetch(`.${path}`);
+        if (!htmlResponse.ok) {
+          throw new Error(`加载失败: ${htmlResponse.status} ${htmlResponse.statusText}`);
+        }
+        const htmlContent = await htmlResponse.text();
+        
+        // 将 HTML 内容挂载到 shadow DOM
+        if (shadowRoot) {
+          shadowRoot.innerHTML = htmlContent;
+          console.log('HTML 已成功挂载到 shadow DOM');
+          
+          // 等待 shadow root 元素渲染完毕后自动标注
+          // 使用 requestAnimationFrame 确保浏览器完成渲染
+          requestAnimationFrame(() => {
+            // 再等待一帧确保所有元素都已渲染
+            requestAnimationFrame(() => {
+              autoAnnotate();
+            });
+          });
+        }
+      } catch (error) {
+        console.error('加载或挂载 HTML 时出错:', error);
+        if (shadowRoot) {
+          shadowRoot.innerHTML = `<div style="padding: 20px; color: red;">加载失败: ${error.message}</div>`;
+        }
+      }
+    }
+
+    // 计算元素的深度（从shadow root开始，depth=1是root的直接子元素）
+    function calculateDepth(element, root) {
+      if (element === root) {
+        return 0;
+      }
+      
+      let depth = 1;
+      let current = element;
+      
+      // 向上遍历到root，计算深度
+      while (current && current.parentElement && current.parentElement !== root) {
+        depth++;
+        current = current.parentElement;
+      }
+      
+      return depth;
+    }
+
+    // 应用标注
+    function applyAnnotation() {
+      if (!shadowRoot) return;
+      
+      const depthInput = document.getElementById('depth-input');
+      const targetDepth = parseInt(depthInput.value, 10);
+      
+      if (isNaN(targetDepth) || targetDepth < 1 || targetDepth > 20) {
+        alert('深度必须在 1-20 之间');
+        return;
+      }
+      
+      currentDepth = targetDepth;
+      
+      // 清除之前的标注
+      clearAnnotation();
+      
+      // 添加标注样式
+      let styleElement = shadowRoot.querySelector('style.annotation-style');
+      if (!styleElement) {
+        styleElement = document.createElement('style');
+        styleElement.className = 'annotation-style';
+        shadowRoot.insertBefore(styleElement, shadowRoot.firstChild);
+      }
+      
+      styleElement.textContent = `
+        .depth-annotated {
+          border: 2px dashed red !important;
+          box-shadow: 0 0 0 2px rgba(255, 0, 0, 0.3) !important;
+          background-color: rgba(255, 0, 0, 0.05) !important;
+          position: relative !important;
+        }
+        .depth-annotated::before {
+          content: attr(data-depth-info);
+          position: absolute;
+          top: -20px;
+          left: 0;
+          background: red;
+          color: white;
+          padding: 2px 6px;
+          font-size: 10px;
+          z-index: 10000;
+          white-space: nowrap;
+        }
+      `;
+      
+      // 遍历所有元素并标注
+      const root = shadowRoot;
+      let annotatedCount = 0;
+      
+      // 获取所有元素（包括shadow root的直接子元素）
+      const allElements = Array.from(shadowRoot.children).concat(
+        Array.from(shadowRoot.querySelectorAll('*'))
+      );
+      
+      // 去重
+      const uniqueElements = [...new Set(allElements)];
+      
+      // 先收集所有元素的深度信息
+      const elementDepths = new Map();
+      uniqueElements.forEach((element) => {
+        if (element.tagName === 'STYLE') {
+          return;
+        }
+        const depth = calculateDepth(element, root);
+        elementDepths.set(element, depth);
+      });
+      
+      // 检查元素是否有指定深度的子元素
+      function hasTargetDepthDescendant(element, targetDepth) {
+        const children = Array.from(element.children);
+        for (const child of children) {
+          const childDepth = elementDepths.get(child);
+          if (childDepth === targetDepth) {
+            return true;
+          }
+          // 递归检查更深层的子元素
+          if (hasTargetDepthDescendant(child, targetDepth)) {
+            return true;
+          }
+        }
+        return false;
+      }
+      
+      uniqueElements.forEach((element) => {
+        // 跳过style元素
+        if (element.tagName === 'STYLE') {
+          return;
+        }
+        
+        const depth = elementDepths.get(element);
+        const hasChildren = element.children.length > 0;
+        
+        // 标注条件：
+        // 1. 如果 depth == targetDepth，标注
+        // 2. 如果 depth < targetDepth 且没有子元素（叶子节点），标注
+        // 3. 如果 depth < targetDepth 且有子元素，但子元素中没有 depth == targetDepth 的，标注
+        let shouldAnnotate = false;
+        
+        if (depth === targetDepth) {
+          // 深度等于目标深度，直接标注
+          shouldAnnotate = true;
+        } else if (depth < targetDepth) {
+          if (!hasChildren) {
+            // 没有子元素的叶子节点，标注
+            shouldAnnotate = true;
+          } else {
+            // 有子元素，检查是否有 depth == targetDepth 的子元素
+            // 如果没有，则标注这个父元素
+            shouldAnnotate = !hasTargetDepthDescendant(element, targetDepth);
+          }
+        }
+        
+        if (shouldAnnotate) {
+          element.classList.add('depth-annotated');
+          element.setAttribute('data-depth-info', `Depth: ${depth}`);
+          annotatedCount++;
+        }
+      });
+      
+      console.log(`已标注 ${annotatedCount} 个元素（深度 <= ${targetDepth}）`);
+    }
+
+    // 清除标注
+    function clearAnnotation() {
+      if (!shadowRoot) return;
+      
+      // 移除所有标注类
+      const annotatedElements = shadowRoot.querySelectorAll('.depth-annotated');
+      annotatedElements.forEach((element) => {
+        element.classList.remove('depth-annotated');
+        element.removeAttribute('data-depth-info');
+      });
+      
+      // 移除样式元素
+      const styleElement = shadowRoot.querySelector('style.annotation-style');
+      if (styleElement) {
+        styleElement.remove();
+      }
+    }
+
+    // 统计指定深度标注的元素数量（不实际标注）
+    function countAnnotatedElements(targetDepth) {
+      if (!shadowRoot) return 0;
+      
+      const root = shadowRoot;
+      const allElements = Array.from(shadowRoot.children).concat(
+        Array.from(shadowRoot.querySelectorAll('*'))
+      );
+      const uniqueElements = [...new Set(allElements)];
+      
+      // 收集所有元素的深度信息
+      const elementDepths = new Map();
+      uniqueElements.forEach((element) => {
+        if (element.tagName === 'STYLE') {
+          return;
+        }
+        const depth = calculateDepth(element, root);
+        elementDepths.set(element, depth);
+      });
+      
+      // 检查元素是否有指定深度的子元素
+      function hasTargetDepthDescendant(element, targetDepth) {
+        const children = Array.from(element.children);
+        for (const child of children) {
+          const childDepth = elementDepths.get(child);
+          if (childDepth === targetDepth) {
+            return true;
+          }
+          if (hasTargetDepthDescendant(child, targetDepth)) {
+            return true;
+          }
+        }
+        return false;
+      }
+      
+      let count = 0;
+      uniqueElements.forEach((element) => {
+        if (element.tagName === 'STYLE') {
+          return;
+        }
+        
+        const depth = elementDepths.get(element);
+        const hasChildren = element.children.length > 0;
+        
+        let shouldAnnotate = false;
+        
+        if (depth === targetDepth) {
+          shouldAnnotate = true;
+        } else if (depth < targetDepth) {
+          if (!hasChildren) {
+            shouldAnnotate = true;
+          } else {
+            shouldAnnotate = !hasTargetDepthDescendant(element, targetDepth);
+          }
+        }
+        
+        if (shouldAnnotate) {
+          count++;
+        }
+      });
+      
+      return count;
+    }
+
+    // 自动标注算法
+    function autoAnnotate() {
+      if (!shadowRoot) return;
+      
+      const root = shadowRoot;
+      const allElements = Array.from(shadowRoot.children).concat(
+        Array.from(shadowRoot.querySelectorAll('*'))
+      );
+      const uniqueElements = [...new Set(allElements)].filter(
+        el => el.tagName !== 'STYLE'
+      );
+      
+      if (uniqueElements.length === 0) {
+        alert('没有可标注的元素');
+        return;
+      }
+      
+      // 策略1：统计每个深度的元素数量
+      const depthCounts = {};
+      const elementDepths = new Map();
+      
+      uniqueElements.forEach((element) => {
+        const depth = calculateDepth(element, root);
+        elementDepths.set(element, depth);
+        if (!depthCounts[depth]) {
+          depthCounts[depth] = 0;
+        }
+        depthCounts[depth]++;
+      });
+      
+      // 统计每个深度标注的元素数量
+      const annotationCounts = {};
+      for (let depth = 1; depth <= 20; depth++) {
+        annotationCounts[depth] = countAnnotatedElements(depth);
+      }
+      
+      // 策略1：选择元素数量在理想范围内的深度（30-150个元素）
+      // 理想值：50-100个元素，这样既不会太多也不会太少
+      const idealMin = 30;
+      const idealMax = 150;
+      const preferredMin = 50;
+      const preferredMax = 100;
+      let bestDepth = null;
+      let bestScore = Infinity;
+      
+      for (let depth = 1; depth <= 20; depth++) {
+        const count = annotationCounts[depth];
+        if (count === 0) continue;
+        
+        // 如果数量在理想范围内，优先选择
+        if (count >= idealMin && count <= idealMax) {
+          // 选择最接近理想值（75）的深度
+          const score = Math.abs(count - 75);
+          if (score < bestScore) {
+            bestScore = score;
+            bestDepth = depth;
+          }
+        }
+      }
+      
+      // 策略2：如果没有找到理想范围内的，选择元素数量变化最大的深度
+      // 这通常意味着找到了一个结构层次的关键点
+      if (!bestDepth) {
+        let maxChange = 0;
+        let maxChangeDepth = null;
+        for (let depth = 2; depth <= 20; depth++) {
+          const prevCount = annotationCounts[depth - 1] || 0;
+          const currCount = annotationCounts[depth] || 0;
+          const change = Math.abs(currCount - prevCount);
+          
+          // 如果当前深度的元素数量在合理范围内，优先选择
+          if (currCount >= 20 && currCount <= 300) {
+            if (change > maxChange) {
+              maxChange = change;
+              maxChangeDepth = depth;
+            }
+          }
+        }
+        if (maxChangeDepth) {
+          bestDepth = maxChangeDepth;
+        }
+      }
+      
+      // 策略3：如果还是没有找到，选择元素数量最接近理想值的深度
+      if (!bestDepth) {
+        bestScore = Infinity;
+        for (let depth = 1; depth <= 20; depth++) {
+          const count = annotationCounts[depth];
+          if (count === 0) continue;
+          
+          // 优先选择数量在20-300之间的
+          if (count >= 20 && count <= 300) {
+            const score = Math.abs(count - 75);
+            if (score < bestScore) {
+              bestScore = score;
+              bestDepth = depth;
+            }
+          }
+        }
+      }
+      
+      // 策略4：如果还是没有找到，选择第一个有元素的深度
+      if (!bestDepth) {
+        for (let depth = 1; depth <= 20; depth++) {
+          if (annotationCounts[depth] > 0) {
+            bestDepth = depth;
+            break;
+          }
+        }
+      }
+      
+      if (bestDepth) {
+        // 更新深度输入框
+        document.getElementById('depth-input').value = bestDepth;
+        
+        // 应用标注
+        applyAnnotation();
+        
+        // 显示自动标注信息
+        const info = `自动选择深度 ${bestDepth}，标注 ${annotationCounts[bestDepth]} 个元素`;
+        document.getElementById('auto-annotation-info').textContent = info;
+        console.log('自动标注信息:', {
+          selectedDepth: bestDepth,
+          annotatedCount: annotationCounts[bestDepth],
+          depthCounts: depthCounts,
+          annotationCounts: annotationCounts
+        });
+      } else {
+        alert('无法找到合适的标注深度');
+      }
+    }
+
+    // 键盘快捷键支持
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
+        return;
+      }
+      
+      if (e.key === 'ArrowLeft') {
+        loadPrevious();
+      } else if (e.key === 'ArrowRight') {
+        loadNext();
+      }
+    });
+
+    // 输入框回车键支持
+    document.getElementById('index-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        loadByIndex();
+      }
+    });
+
+    // 深度输入框回车键支持
+    document.getElementById('depth-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        applyAnnotation();
+      }
+    });
+
+    // 深度输入框变化时自动应用
+    document.getElementById('depth-input').addEventListener('change', () => {
+      applyAnnotation();
+    });
+    
+    // 页面加载完成后执行
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
