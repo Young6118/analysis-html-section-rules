@@ -51,3 +51,6 @@ rl.on('close', () => {
   console.log('文件读取完成');
   fs.writeFileSync('./original_content/pages.json', JSON.stringify(pages, null, 2));
 });
+
+// copy index.html to original_content
+fs.copyFileSync('index.html', './original_content/index.html');
